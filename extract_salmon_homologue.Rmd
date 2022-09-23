@@ -1,0 +1,119 @@
+---
+title: "Extract_Salmon_Homologue"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+
+### Pipeline to retrieve Salmon homologues for gimme maelstrom outputs
+
+&nbsp;<br>
+&nbsp;<br>
+
+### 1: Extract Uniprot ID for the enriched TF
+
+```{r results='asis', warning=FALSE, message=FALSE}
+
+#### Load libraries
+library(tidyverse)
+library(kableExtra)
+library(biomaRt)
+library(JASPAR2022)
+library(TFBSTools)
+
+#Load gimme maelstrom motif2factors.txt output
+#Separate the first column by '_' to get motif ID
+my_tsv <- read_tsv("JASPAR2022_vertebrates.motif2factors.txt") %>% 
+  separate(., col = Motif, into = c("ID", "ID_name"), sep = "\\_")
+
+#get PFMatrixList for each motif ID using JASPAR database
+my_matrix <- getMatrixByID(JASPAR2022, my_tsv$ID)
+
+#the PFMatrixList above has Uniprot IDs, extract these for each motif ID
+#we will reads one motif at a time, extract the Uniprot ID, and write them to a dataframe
+#first, create an empty df first
+df <- data.frame(x = "", y = "", z = "")
+x <- c("Motif", "Uniprot1", "Uniprot2")
+colnames(df) <- x
+
+#now add data to the empty df
+#some have two Uniprot ID (for TF heterodimer motifs)...
+#...for these, write the second ID into the 3rd column 
+for (k in 1:length(my_matrix)) {
+  n <- length(my_matrix@listData[[k]]@tags[["acc"]])
+  if (n == 1){
+    Motif <- my_matrix@listData[[k]]@ID
+    Uniprot1 <- my_matrix@listData[[k]]@tags[["acc"]]
+    Uniprot2 <- "" #empty entry for the Uniprot2 column
+    output = c(Motif, Uniprot1, Uniprot2)
+    df = rbind(df, output)}
+  else{
+    Motif <- my_matrix@listData[[k]]@ID
+    #get the two Uniprot IDs by splitting string
+    Uniprot <- strsplit(my_matrix@listData[[k]]@tags[["acc"]], "\\s{2,}")
+    Uniprot1 <- Uniprot[[1]]
+    Uniprot2 <- Uniprot[[2]] #this will go into the Uniprot2 column
+    output = c(Motif, Uniprot1, Uniprot2)
+    df = rbind(df, output)}
+  }
+
+
+df <- df %>% 
+  dplyr::slice(2:nrow(df)) #remove first row which is empty
+
+#combine all Uniprot IDs (from two columns) into one list
+Uniprot_ID_list <- c(df$Uniprot1, df$Uniprot2)
+
+#display table
+kable(head(Uniprot_ID_list), caption = "Human Uniprot IDs") %>% 
+  kableExtra::kable_styling()
+```
+
+
+
+### 2: Convert 'Human Uniprot ID' -> 'Human Ensembl Gene ID' using biomaRt
+
+```{r results='asis', warning=FALSE, message=FALSE}
+mart <- useEnsembl("ensembl","hsapiens_gene_ensembl")
+#get Ensembl Gene ID for Uniprot ID
+human_geneID_Uniprot <- getBM(c("ensembl_gene_id","uniprot_gn_id", "external_gene_name"), "uniprot_gn_id", values = Uniprot_ID_list, mart)
+
+colnames(human_geneID_Uniprot) <- c("Human_Ensembl_Gene", "Human_Uniprot",
+"Human_Gene_name")
+
+write_tsv(human_geneID_Uniprot, "human_gene_id_for_gimme_output.txt")
+
+#display table
+kable(head(human_geneID_Uniprot), caption = "Human genes Uniprot IDs") %>% 
+  kableExtra::kable_styling()
+```
+
+### 3: Retrieve Salmon homologue for the human ensembl gene
+
+```{r results='asis', warning=FALSE, message=FALSE}
+ensembl <- useMart("ensembl")
+ensembl <- useDataset("hsapiens_gene_ensembl",mart=ensembl)
+# filters = listFilters(ensembl) # to see all possible filters
+# attributes = listAttributes(ensembl)# to see all possible attributes
+
+human_ensembl_ID <- human_geneID_Uniprot$Human_Ensembl_Gene
+
+salmon_human_homologue <- getBM(attributes=c('ensembl_gene_id', 
+                                             'external_gene_name',
+                                             'ssalar_homolog_ensembl_gene',
+                                        'ssalar_homolog_associated_gene_name'),
+                                filters = 'ensembl_gene_id', 
+                                values = human_ensembl_ID, mart = ensembl) %>% 
+  rename(., human_ensembl_gene_id = ensembl_gene_id) %>%
+  rename(., salmon_gene_name = ssalar_homolog_associated_gene_name) %>% 
+  rename(., human_gene_name = external_gene_name)
+
+
+write_tsv(salmon_human_homologue, "salmon_human_homologue.txt")
+
+#display table
+kable(head(salmon_human_homologue), caption = "Salmon homologues") %>% 
+  kableExtra::kable_styling()
+
+```
+
